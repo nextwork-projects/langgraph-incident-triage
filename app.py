@@ -1,18 +1,20 @@
 import argparse
 import json
 import os
+import operator
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, Send, interrupt
 
-MODEL_ID = "gemini-3.7-flash"
-DB_PATH = "incident_checkpoints.db"
+from specialists import SPECIALISTS, build_model, load_json, run_specialist
+
+DB_PATH = "triage_checkpoints.db"
+SEVERITY_ORDER = ["SEV4", "SEV3", "SEV2", "SEV1"]
 RUNBOOK_DIR = Path("runbooks")
 RESTRICTED_TERMS = (
     "delete",
@@ -48,10 +50,37 @@ ANALYSIS_SCHEMA = {
     ],
 }
 
+ROUTER_SCHEMA = {
+    "title": "TriageDecision",
+    "type": "object",
+    "properties": {
+        "severity": {
+            "type": "string",
+            "enum": ["SEV1", "SEV2", "SEV3", "SEV4"],
+        },
+        "specialists": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(SPECIALISTS)},
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["severity", "specialists", "reason"],
+}
+
+
+def highest_severity(current: str, new: str) -> str:
+    if current not in SEVERITY_ORDER:
+        return new
+    return max(current, new, key=SEVERITY_ORDER.index)
+
 
 class IncidentState(TypedDict, total=False):
     incident_id: str
     incident: str
+    alert: dict
+    severity: Annotated[str, highest_severity]
+    specialists: list[str]
+    findings: Annotated[list[dict], operator.add]
     analysis: dict[str, str]
     requires_approval: bool
     policy_reason: str
@@ -61,20 +90,21 @@ class IncidentState(TypedDict, total=False):
     runbook_path: str
 
 
-def build_analyst():
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
-    if not project_id:
-        raise RuntimeError("GOOGLE_CLOUD_PROJECT is not set.")
+class SpecialistTask(TypedDict):
+    specialist: str
+    brief: str
 
-    model = ChatGoogleGenerativeAI(
-        model=MODEL_ID,
-        project=project_id,
-        location="global",
-        vertexai=True,
-        max_retries=2,
-    )
-    return model.with_structured_output(
+
+def build_analyst():
+    return build_model().with_structured_output(
         schema=ANALYSIS_SCHEMA,
+        method="json_schema",
+    )
+
+
+def build_router():
+    return build_model().with_structured_output(
+        schema=ROUTER_SCHEMA,
         method="json_schema",
     )
 
@@ -90,22 +120,81 @@ def safe_incident_id(incident_id: str) -> str:
     return safe_id
 
 
+def incident_brief(state: IncidentState) -> str:
+    alert = state["alert"]
+    services = load_json("services.json")
+    service = alert["service"]
+    related = [service] + services[service]["depends_on"]
+    return (
+        f"Alert {alert['id']} fired at {alert['fired_at']} on {service}.\n"
+        f"{alert['title']}: {alert['description']}\n"
+        f"Services to check: {', '.join(related)}."
+    )
+
+
+def route_incident(state: IncidentState):
+    decision = build_router().invoke(
+        [
+            (
+                "system",
+                "You are the incident commander. Set a first severity and choose "
+                "which specialists investigate: logs, deploys, metrics. For SEV1 "
+                "or SEV2, send every specialist. For SEV3 or SEV4, send only the "
+                "one or two most likely to explain the symptom.",
+            ),
+            ("human", incident_brief(state)),
+        ]
+    )
+    print(f"Router: {decision['severity']}, sending {', '.join(decision['specialists'])}")
+    return {
+        "severity": decision["severity"],
+        "specialists": decision["specialists"],
+        "status": "routed",
+        "audit_log": state["audit_log"]
+        + [f"Router chose {decision['specialists']}: {decision['reason']}"],
+    }
+
+
+def dispatch_specialists(state: IncidentState):
+    brief = incident_brief(state)
+    return [
+        Send("investigate", {"specialist": name, "brief": brief})
+        for name in state["specialists"]
+    ]
+
+
+def investigate(task: SpecialistTask):
+    name = task["specialist"]
+    print(f"  {name} specialist investigating...")
+    finding = run_specialist(name, task["brief"])
+    print(f"  {name} specialist done: {finding['severity']}, {finding['suspected_cause']}")
+    return {
+        "findings": [{"specialist": name, **finding}],
+        "severity": finding["severity"],
+    }
+
+
 def analyze_incident(state: IncidentState):
     analyst = build_analyst()
+    findings = json.dumps(state["findings"], indent=2)
     analysis = analyst.invoke(
         [
             (
                 "system",
-                "You are an SRE incident analyst. Classify the incident and "
-                "propose one reversible remediation step. Keep every field concise.",
+                "You are an SRE incident analyst. Combine the specialists' "
+                "findings into one diagnosis, name the most likely cause with its "
+                "evidence, and propose one reversible remediation step. Keep "
+                "every field concise.",
             ),
-            ("human", state["incident"]),
+            ("human", f"{state['incident']}\n\nFindings:\n{findings}"),
         ]
     )
     return {
         "analysis": analysis,
+        "severity": analysis["severity"],
         "status": "analyzed",
-        "audit_log": ["Model produced structured incident analysis."],
+        "audit_log": state["audit_log"]
+        + [f"Model combined {len(state['findings'])} findings into one analysis."],
     }
 
 
@@ -114,7 +203,7 @@ def policy_check(state: IncidentState):
     searchable_text = (
         f"{state['incident']} {analysis['proposed_action']}"
     ).lower()
-    severity_requires_review = analysis["severity"] in {"SEV1", "SEV2"}
+    severity_requires_review = state["severity"] in {"SEV1", "SEV2"}
     term_requires_review = any(
         term in searchable_text for term in RESTRICTED_TERMS
     )
@@ -174,7 +263,7 @@ def publish_runbook(state: IncidentState):
         "# Policy-Controlled Incident Runbook\n\n"
         f"Incident ID: {state['incident_id']}\n\n"
         f"Incident: {state['incident']}\n\n"
-        f"Severity: {analysis['severity']}\n\n"
+        f"Severity: {state['severity']}\n\n"
         f"Summary: {analysis['summary']}\n\n"
         f"Proposed action: {analysis['proposed_action']}\n\n"
         f"Rationale: {analysis['rationale']}\n\n"
@@ -201,13 +290,19 @@ def reject_runbook(state: IncidentState):
 
 def build_graph(checkpointer: SqliteSaver):
     builder = StateGraph(IncidentState)
-    builder.add_node("analyze_incident", analyze_incident)
+    builder.add_node("route_incident", route_incident)
+    builder.add_node("investigate", investigate)
+    builder.add_node("analyze_incident", analyze_incident, defer=True)
     builder.add_node("policy_check", policy_check)
     builder.add_node("approval_gate", approval_gate)
     builder.add_node("publish_runbook", publish_runbook)
     builder.add_node("reject_runbook", reject_runbook)
 
-    builder.add_edge(START, "analyze_incident")
+    builder.add_edge(START, "route_incident")
+    builder.add_conditional_edges(
+        "route_incident", dispatch_specialists, ["investigate"]
+    )
+    builder.add_edge("investigate", "analyze_incident")
     builder.add_edge("analyze_incident", "policy_check")
     builder.add_conditional_edges("policy_check", policy_route)
     builder.add_conditional_edges("approval_gate", approval_route)
@@ -236,7 +331,7 @@ def parse_args():
 
     start_parser = subparsers.add_parser("start")
     start_parser.add_argument("--thread", required=True)
-    start_parser.add_argument("--incident", required=True)
+    start_parser.add_argument("--alert", required=True)
 
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("--thread", required=True)
@@ -257,9 +352,12 @@ def main():
         graph = build_graph(checkpointer)
 
         if args.command == "start":
+            alerts = {alert["id"]: alert for alert in load_json("alerts.json")}
+            alert = alerts[args.alert]
             graph_input = {
                 "incident_id": args.thread,
-                "incident": args.incident,
+                "incident": f"{alert['title']}: {alert['description']}",
+                "alert": alert,
                 "status": "new",
                 "audit_log": [],
             }
