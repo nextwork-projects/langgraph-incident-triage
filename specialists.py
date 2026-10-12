@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 from pathlib import Path
@@ -120,3 +121,28 @@ def build_specialist(name: str):
 def run_specialist(name: str, brief: str) -> dict:
     result = build_specialist(name).invoke({"messages": [("human", brief)]})
     return result["structured_response"]
+
+
+def alert_brief(alert_id: str) -> str:
+    alert = {a["id"]: a for a in load_json("alerts.json")}[alert_id]
+    service = alert["service"]
+    related = [service] + load_json("services.json")[service]["depends_on"]
+    return (
+        f"Alert {alert['id']} fired at {alert['fired_at']} on {service}.\n"
+        f"{alert['title']}: {alert['description']}\n"
+        f"Services to check: {', '.join(related)}."
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run one specialist on one alert.")
+    parser.add_argument("specialist", choices=list(SPECIALISTS))
+    parser.add_argument("alert")
+    args = parser.parse_args()
+    print(f"{args.specialist} specialist investigating {args.alert}...")
+    finding = run_specialist(args.specialist, alert_brief(args.alert))
+    print(json.dumps(finding, indent=2))
+
+
+if __name__ == "__main__":
+    main()

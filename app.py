@@ -11,7 +11,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Send, interrupt
 
-from specialists import SPECIALISTS, build_model, load_json, run_specialist
+from specialists import SPECIALISTS, alert_brief, build_model, load_json, run_specialist
 
 DB_PATH = "triage_checkpoints.db"
 SEVERITY_ORDER = ["SEV4", "SEV3", "SEV2", "SEV1"]
@@ -135,15 +135,7 @@ def safe_incident_id(incident_id: str) -> str:
 
 
 def incident_brief(state: IncidentState) -> str:
-    alert = state["alert"]
-    services = load_json("services.json")
-    service = alert["service"]
-    related = [service] + services[service]["depends_on"]
-    return (
-        f"Alert {alert['id']} fired at {alert['fired_at']} on {service}.\n"
-        f"{alert['title']}: {alert['description']}\n"
-        f"Services to check: {', '.join(related)}."
-    )
+    return alert_brief(state["alert"]["id"])
 
 
 def route_incident(state: IncidentState):
@@ -198,7 +190,9 @@ def analyze_incident(state: IncidentState):
                 "You are an SRE incident analyst. Combine the specialists' "
                 "findings into one diagnosis and name the most likely cause with "
                 "its evidence. Propose one reversible remediation step for each "
-                "affected service that needs one, at most three. Keep every "
+                "service the evidence implicates: the alerting service and every "
+                "dependency named in the findings' evidence, at most three. Each "
+                "service's owning team must approve its own step. Keep every "
                 "field concise.",
             ),
             ("human", f"{state['incident']}\n\nFindings:\n{findings}"),
