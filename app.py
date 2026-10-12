@@ -323,6 +323,14 @@ def display_stream(stream):
     print(json.dumps(final_state, indent=2))
 
 
+def display_failure(graph, config, error):
+    snapshot = graph.get_state(config)
+    saved = [finding["specialist"] for finding in snapshot.values.get("findings", [])]
+    print(f"WORKFLOW FAILED: {error}")
+    print(f"Saved findings: {', '.join(saved) or 'none'}")
+    print(f"Waiting to re-run: {', '.join(snapshot.next)}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run a resumable incident-triage workflow."
@@ -338,7 +346,7 @@ def parse_args():
     resume_parser.add_argument(
         "--decision",
         choices=["approve", "reject"],
-        required=True,
+        help="Leave out to retry a failed run.",
     )
 
     return parser.parse_args()
@@ -361,16 +369,21 @@ def main():
                 "status": "new",
                 "audit_log": [],
             }
-        else:
+        elif args.decision:
             graph_input = Command(resume=args.decision)
+        else:
+            graph_input = None
 
-        stream = graph.stream_events(
-            graph_input,
-            config=config,
-            durability="sync",
-            version="v3",
-        )
-        display_stream(stream)
+        try:
+            stream = graph.stream_events(
+                graph_input,
+                config=config,
+                durability="sync",
+                version="v3",
+            )
+            display_stream(stream)
+        except Exception as error:
+            display_failure(graph, config, error)
 
 
 if __name__ == "__main__":
