@@ -29,9 +29,12 @@ def fakes(monkeypatch, tmp_path):
         "analysis": {
             "severity": "SEV2",
             "summary": "Pool exhausted after d-1042.",
-            "proposed_action": "Roll back d-1042 on checkout-api.",
-            "risk": "high",
+            "likely_cause": "d-1042 cut maximumPoolSize from 50 to 5.",
             "rationale": "Errors began 10 minutes after the pool change.",
+            "actions": [
+                {"service": "checkout-api", "action": "Roll back d-1042 on checkout-api."},
+                {"service": "orders-db", "action": "Add an alert when checkout-api holds fewer than 10 connections."},
+            ],
         },
         "specialist_calls": {"logs": 0, "deploys": 0, "metrics": 0},
         "fail": set(),

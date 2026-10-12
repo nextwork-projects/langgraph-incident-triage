@@ -23,7 +23,7 @@ def fake_run_specialist(name, brief):
     return {"summary": "ok", "evidence": [], "suspected_cause": "d-1042", "severity": "SEV3"}
 app.run_specialist = fake_run_specialist
 app.build_router = lambda: FakeModel({"severity": "SEV2", "specialists": ["logs", "deploys", "metrics"], "reason": "r"})
-app.build_analyst = lambda: FakeModel({"severity": "SEV2", "summary": "s", "proposed_action": "Roll back d-1042.", "risk": "high", "rationale": "r"})
+app.build_analyst = lambda: FakeModel({"severity": "SEV2", "summary": "s", "likely_cause": "d-1042", "rationale": "r", "actions": [{"service": "checkout-api", "action": "Roll back d-1042."}]})
 sys.argv = ["app.py"] + sys.argv[2:]
 app.main()
 '''

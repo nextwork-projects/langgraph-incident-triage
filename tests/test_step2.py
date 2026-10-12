@@ -33,14 +33,14 @@ def test_checkout_runs_three_specialists_then_pauses(fakes):
         snap = graph.get_state({"configurable": {"thread_id": "inc-1"}})
     assert sorted(f["specialist"] for f in snap.values["findings"]) == ["deploys", "logs", "metrics"]
     assert snap.values["severity"] == "SEV2"  # router SEV2 beats specialists' SEV3
-    assert snap.next == ("approval_gate",)
+    assert snap.next == ("approval_gate", "approval_gate")
     assert fakes["analyst"].calls == 1  # deferred synthesis runs once, not once per specialist
     assert "__interrupt__" in out
 
 
 def test_low_severity_runs_one_specialist_and_publishes(fakes):
     fakes["route"] = {"severity": "SEV4", "specialists": ["metrics"], "reason": "latency only"}
-    fakes["analysis"] = dict(fakes["analysis"], severity="SEV4", proposed_action="Raise the search cache TTL back to 600s.")
+    fakes["analysis"] = dict(fakes["analysis"], severity="SEV4", actions=[{"service": "search-api", "action": "Raise the search cache TTL back to 600s."}])
     with SqliteSaver.from_conn_string(app.DB_PATH) as cp:
         out = start(app.build_graph(cp), "inc-2", "INC-2042")
     assert [f["specialist"] for f in out["findings"]] == ["metrics"]

@@ -3,7 +3,7 @@ import json
 import os
 import operator
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, TypedDict
 
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
@@ -26,7 +26,7 @@ RESTRICTED_TERMS = (
 )
 
 ANALYSIS_SCHEMA = {
-    "title": "IncidentAnalysis",
+    "title": "IncidentPlan",
     "type": "object",
     "properties": {
         "severity": {
@@ -34,19 +34,26 @@ ANALYSIS_SCHEMA = {
             "enum": ["SEV1", "SEV2", "SEV3", "SEV4"],
         },
         "summary": {"type": "string"},
-        "proposed_action": {"type": "string"},
-        "risk": {
-            "type": "string",
-            "enum": ["low", "high"],
-        },
+        "likely_cause": {"type": "string"},
         "rationale": {"type": "string"},
+        "actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"},
+                    "action": {"type": "string"},
+                },
+                "required": ["service", "action"],
+            },
+        },
     },
     "required": [
         "severity",
         "summary",
-        "proposed_action",
-        "risk",
+        "likely_cause",
         "rationale",
+        "actions",
     ],
 }
 
@@ -81,10 +88,9 @@ class IncidentState(TypedDict, total=False):
     severity: Annotated[str, highest_severity]
     specialists: list[str]
     findings: Annotated[list[dict], operator.add]
-    analysis: dict[str, str]
-    requires_approval: bool
-    policy_reason: str
-    decision: bool
+    analysis: dict
+    actions: list[dict]
+    approvals: Annotated[list[dict], operator.add]
     status: str
     audit_log: list[str]
     runbook_path: str
@@ -93,6 +99,14 @@ class IncidentState(TypedDict, total=False):
 class SpecialistTask(TypedDict):
     specialist: str
     brief: str
+
+
+class ActionTask(TypedDict):
+    incident_id: str
+    team: str
+    service: str
+    action: str
+    policy_reason: str
 
 
 def build_analyst():
@@ -182,9 +196,10 @@ def analyze_incident(state: IncidentState):
             (
                 "system",
                 "You are an SRE incident analyst. Combine the specialists' "
-                "findings into one diagnosis, name the most likely cause with its "
-                "evidence, and propose one reversible remediation step. Keep "
-                "every field concise.",
+                "findings into one diagnosis and name the most likely cause with "
+                "its evidence. Propose one reversible remediation step for each "
+                "affected service that needs one, at most three. Keep every "
+                "field concise.",
             ),
             ("human", f"{state['incident']}\n\nFindings:\n{findings}"),
         ]
@@ -199,65 +214,99 @@ def analyze_incident(state: IncidentState):
 
 
 def policy_check(state: IncidentState):
-    analysis = state["analysis"]
-    searchable_text = (
-        f"{state['incident']} {analysis['proposed_action']}"
-    ).lower()
+    services = load_json("services.json")
     severity_requires_review = state["severity"] in {"SEV1", "SEV2"}
-    term_requires_review = any(
-        term in searchable_text for term in RESTRICTED_TERMS
-    )
-    requires_approval = severity_requires_review or term_requires_review
-    reason = (
-        "High severity or restricted operational language detected."
-        if requires_approval
-        else "No high-risk policy rule matched."
-    )
+    actions, approvals = [], []
+    for proposed in state["analysis"]["actions"]:
+        service = services.get(proposed["service"], {"team": "unowned"})
+        searchable_text = f"{state['incident']} {proposed['action']}".lower()
+        term_requires_review = any(
+            term in searchable_text for term in RESTRICTED_TERMS
+        )
+        requires_approval = severity_requires_review or term_requires_review
+        action = {
+            "incident_id": state["incident_id"],
+            "team": service["team"],
+            "service": proposed["service"],
+            "action": proposed["action"],
+            "policy_reason": (
+                "High severity or restricted operational language detected."
+                if requires_approval
+                else "No high-risk policy rule matched."
+            ),
+        }
+        actions.append(action | {"requires_approval": requires_approval})
+        if not requires_approval:
+            approvals.append(action | {"decision": "not required"})
+    gated = sum(action["requires_approval"] for action in actions)
     return {
-        "requires_approval": requires_approval,
-        "policy_reason": reason,
+        "actions": actions,
+        "approvals": approvals,
         "status": "policy_checked",
-        "audit_log": state["audit_log"] + [f"Policy check: {reason}"],
+        "audit_log": state["audit_log"]
+        + [f"Policy check: {gated} of {len(actions)} actions need team approval."],
     }
 
 
-def policy_route(state: IncidentState) -> Literal["approval_gate", "publish_runbook"]:
-    return "approval_gate" if state["requires_approval"] else "publish_runbook"
+def policy_route(state: IncidentState):
+    gated = [action for action in state["actions"] if action["requires_approval"]]
+    if not gated:
+        return "publish_runbook"
+    return [
+        Send(
+            "approval_gate",
+            {key: value for key, value in action.items() if key != "requires_approval"},
+        )
+        for action in gated
+    ]
 
 
-def approval_gate(state: IncidentState):
+def approval_gate(task: ActionTask):
     decision = interrupt(
         {
-            "question": "Approve this remediation proposal?",
-            "incident_id": state["incident_id"],
-            "incident": state["incident"],
-            "analysis": state["analysis"],
-            "policy_reason": state["policy_reason"],
+            "question": f"Approve this action for team {task['team']}?",
+            "incident_id": task["incident_id"],
+            "team": task["team"],
+            "service": task["service"],
+            "action": task["action"],
+            "policy_reason": task["policy_reason"],
             "allowed_decisions": ["approve", "reject"],
         }
     )
     if decision not in ("approve", "reject"):
         raise ValueError("Decision must be 'approve' or 'reject'.")
-    approved = decision == "approve"
-    return {
-        "decision": approved,
-        "status": "approved" if approved else "rejected",
-        "audit_log": state["audit_log"]
-        + ["Human approved the proposal." if approved else "Human rejected the proposal."],
-    }
-
-
-def approval_route(state: IncidentState) -> Literal["publish_runbook", "reject_runbook"]:
-    return "publish_runbook" if state["decision"] else "reject_runbook"
+    return {"approvals": [task | {"decision": decision}]}
 
 
 def publish_runbook(state: IncidentState):
+    approvals = state.get("approvals", [])
+    approved = [a for a in approvals if a["decision"] in ("approve", "not required")]
+    decisions = [
+        f"Team {a['team']} decision for {a['service']}: {a['decision']}."
+        for a in approvals
+    ]
+    if not approved:
+        return {
+            "status": "rejected_without_publish",
+            "audit_log": state["audit_log"]
+            + decisions
+            + ["Every action was rejected. Publishing was skipped."],
+        }
+
     RUNBOOK_DIR.mkdir(exist_ok=True)
     path = RUNBOOK_DIR / f"{safe_incident_id(state['incident_id'])}.md"
     analysis = state["analysis"]
-    approval_outcome = "Approved" if state.get("decision") else "Not required by policy"
-    audit_log = state["audit_log"] + [f"Published runbook to {path}."]
+    audit_log = state["audit_log"] + decisions + [f"Published runbook to {path}."]
     audit_lines = "\n".join(f"- {entry}" for entry in audit_log)
+    finding_lines = "\n".join(
+        f"- {f['specialist']} ({f['severity']}): {f['summary']}"
+        for f in state["findings"]
+    )
+    action_lines = "\n".join(
+        f"- {a['team']} / {a['service']}: {a['action']} "
+        f"({'approved by team' if a['decision'] == 'approve' else 'approval not required'})"
+        for a in approved
+    )
 
     path.write_text(
         "# Policy-Controlled Incident Runbook\n\n"
@@ -265,11 +314,12 @@ def publish_runbook(state: IncidentState):
         f"Incident: {state['incident']}\n\n"
         f"Severity: {state['severity']}\n\n"
         f"Summary: {analysis['summary']}\n\n"
-        f"Proposed action: {analysis['proposed_action']}\n\n"
+        f"Likely cause: {analysis['likely_cause']}\n\n"
         f"Rationale: {analysis['rationale']}\n\n"
-        f"Model risk: {analysis['risk']}\n\n"
-        f"Policy result: {state['policy_reason']}\n\n"
-        f"Approval outcome: {approval_outcome}\n\n"
+        "Findings:\n"
+        f"{finding_lines}\n\n"
+        "Approved actions:\n"
+        f"{action_lines}\n\n"
         "Audit log:\n"
         f"{audit_lines}\n",
         encoding="utf-8",
@@ -281,13 +331,6 @@ def publish_runbook(state: IncidentState):
     }
 
 
-def reject_runbook(state: IncidentState):
-    return {
-        "status": "rejected_without_publish",
-        "audit_log": state["audit_log"] + ["Publishing was skipped."],
-    }
-
-
 def build_graph(checkpointer: SqliteSaver):
     builder = StateGraph(IncidentState)
     builder.add_node("route_incident", route_incident)
@@ -295,8 +338,7 @@ def build_graph(checkpointer: SqliteSaver):
     builder.add_node("analyze_incident", analyze_incident, defer=True)
     builder.add_node("policy_check", policy_check)
     builder.add_node("approval_gate", approval_gate)
-    builder.add_node("publish_runbook", publish_runbook)
-    builder.add_node("reject_runbook", reject_runbook)
+    builder.add_node("publish_runbook", publish_runbook, defer=True)
 
     builder.add_edge(START, "route_incident")
     builder.add_conditional_edges(
@@ -304,10 +346,11 @@ def build_graph(checkpointer: SqliteSaver):
     )
     builder.add_edge("investigate", "analyze_incident")
     builder.add_edge("analyze_incident", "policy_check")
-    builder.add_conditional_edges("policy_check", policy_route)
-    builder.add_conditional_edges("approval_gate", approval_route)
+    builder.add_conditional_edges(
+        "policy_check", policy_route, ["approval_gate", "publish_runbook"]
+    )
+    builder.add_edge("approval_gate", "publish_runbook")
     builder.add_edge("publish_runbook", END)
-    builder.add_edge("reject_runbook", END)
 
     return builder.compile(checkpointer=checkpointer)
 
@@ -315,12 +358,19 @@ def build_graph(checkpointer: SqliteSaver):
 def display_stream(stream):
     final_state = stream.output
     if stream.interrupted:
-        print("WORKFLOW PAUSED")
-        print(json.dumps(stream.interrupts[0].value, indent=2))
+        display_pending(stream.interrupts)
         return
 
     print("WORKFLOW COMPLETE")
-    print(json.dumps(final_state, indent=2))
+    print(f"Status: {final_state['status']}")
+    print(f"Runbook: {final_state.get('runbook_path', 'not published')}")
+
+
+def display_pending(interrupts):
+    print(f"WORKFLOW PAUSED: {len(interrupts)} team approvals pending")
+    for pending in interrupts:
+        request = pending.value
+        print(f"- {request['team']} ({request['service']}): {request['action']}")
 
 
 def display_failure(graph, config, error):
@@ -348,8 +398,12 @@ def parse_args():
         choices=["approve", "reject"],
         help="Leave out to retry a failed run.",
     )
+    resume_parser.add_argument("--team", help="The team whose action you decide.")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.command == "resume" and args.decision and not args.team:
+        parser.error("--decision needs --team.")
+    return args
 
 
 def main():
@@ -370,7 +424,17 @@ def main():
                 "audit_log": [],
             }
         elif args.decision:
-            graph_input = Command(resume=args.decision)
+            pending = graph.get_state(config).interrupts
+            team_requests = {
+                request.id: args.decision
+                for request in pending
+                if request.value["team"] == args.team
+            }
+            if not team_requests:
+                teams = sorted({request.value["team"] for request in pending})
+                print(f"No pending approval for team {args.team}. Waiting on: {', '.join(teams) or 'nobody'}")
+                return
+            graph_input = Command(resume=team_requests)
         else:
             graph_input = None
 
