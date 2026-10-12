@@ -27,7 +27,7 @@ You need a Google Cloud project with billing enabled.
 ```bash
 gcloud config set project YOUR_PROJECT_ID
 gcloud services enable aiplatform.googleapis.com
-git clone <this repo URL> ~/langgraph-incident-triage-v2
+git clone https://github.com/nextwork-projects/langgraph-incident-triage.git ~/langgraph-incident-triage-v2
 cd ~/langgraph-incident-triage-v2
 python3 -m venv .venv
 source .venv/bin/activate
@@ -47,3 +47,8 @@ You should see `WORKFLOW PAUSED` and an approval payload. The `LangChainBetaWarn
 ## Cost
 
 Each run makes a few Gemini 3.7 Flash calls, which costs a few cents at most. Cloud Shell is free.
+
+## Branches
+
+- `main` is the starting point for the Project. Clone it and follow the Project's steps from here.
+- `solution` is the finished build, with offline tests (`python3 -m pip install pytest && python3 -m pytest`). Use it to check your work if you get stuck.
