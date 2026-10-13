@@ -1,3 +1,4 @@
+# Import the CLI, fixture, and agent helpers used throughout this file.
 import argparse
 import json
 import os
@@ -7,27 +8,31 @@ from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+# Keep every specialist on one model and one fixture directory.
 MODEL_ID = "gemini-3.7-flash"
 DATA_DIR = Path(__file__).parent / "data"
 LEVELS = {"INFO": 0, "WARN": 1, "ERROR": 2}
 
 
 def load_json(name: str):
+    # Load one fixture file relative to specialists.py.
     return json.loads((DATA_DIR / name).read_text(encoding="utf-8"))
 
 
 def build_model():
+    # Read the active project selected in Cloud Shell.
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
     if not project_id:
         raise RuntimeError("GOOGLE_CLOUD_PROJECT is not set.")
 
+    # Use Vertex AI with bounded retries and request time.
     return ChatGoogleGenerativeAI(
         model=MODEL_ID,
         project=project_id,
         location="global",
         vertexai=True,
         max_retries=2,
-        timeout=60,
+        timeout=180,
     )
 
 
@@ -119,7 +124,10 @@ def build_specialist(name: str):
 
 
 def run_specialist(name: str, brief: str) -> dict:
-    result = build_specialist(name).invoke({"messages": [("human", brief)]})
+    result = build_specialist(name).invoke(
+        {"messages": [("human", brief)]},
+        config={"recursion_limit": 25},
+    )
     return result["structured_response"]
 
 

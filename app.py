@@ -426,9 +426,13 @@ def main():
             }
             if not team_requests:
                 teams = sorted({request.value["team"] for request in pending})
-                print(f"No pending approval for team {args.team}. Waiting on: {', '.join(teams) or 'nobody'}")
+                print(
+                    f"No pending approval for team {args.team}. "
+                    f"Waiting on: {', '.join(teams) or 'nobody'}"
+                )
                 return
             graph_input = Command(resume=team_requests)
+            print(f"Recorded {args.decision} for {args.team}.")
         else:
             graph_input = None
 
@@ -446,4 +450,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -30,6 +30,7 @@ def test_each_team_approves_separately(tmp_path):
     assert "- payments (checkout-api)" in out and "- platform-data (orders-db)" in out
 
     out = run(tmp_path, "resume", "--thread", "inc-teams", "--team", "payments", "--decision", "approve")
+    assert "Recorded approve for payments." in out
     assert "WORKFLOW PAUSED: 1 team approvals pending" in out
     assert "platform-data" in out
     assert not (tmp_path / "runbooks").exists()

@@ -41,7 +41,10 @@ def main():
     print("Waiting on:")
     for pending in snapshot.interrupts:
         request = pending.value
-        print(f"  {request['team']} ({request['service']}): {request['action']} [interrupt {pending.id[:8]}]")
+        print(
+            f"  {request['team']} ({request['service']}): {request['action']} "
+            f"[interrupt {pending.id[:8]}]"
+        )
     if not snapshot.interrupts:
         print("  nobody")
 
