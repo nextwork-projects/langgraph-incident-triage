@@ -21,7 +21,27 @@ def read_incident(thread_id: str) -> dict | None:
     The page reads these keys: alert, status, severity, analysis, findings,
     approvals, waiting, next, and runbook.
     """
-    raise NotImplementedError("read_incident() isn't written yet.")
+    # Load the latest checkpoint without running or resuming the graph.
+    config = {"configurable": {"thread_id": thread_id}}
+    with SqliteSaver.from_conn_string(DB_PATH) as checkpointer:
+        snapshot = build_graph(checkpointer).get_state(config)
+    values = snapshot.values
+    if not values:
+        return None
+
+    # Show the runbook once the graph has published it.
+    runbook = RUNBOOK_DIR / f"{safe_incident_id(thread_id)}.md"
+    return {
+        "alert": values.get("alert", {}),
+        "status": values.get("status", "unknown"),
+        "severity": values.get("severity", "unknown"),
+        "analysis": values.get("analysis", {}),
+        "findings": values.get("findings", []),
+        "approvals": values.get("approvals", []),
+        "waiting": [pending.value for pending in snapshot.interrupts],
+        "next": list(snapshot.next),
+        "runbook": runbook.read_text(encoding="utf-8") if runbook.exists() else None,
+    }
 
 
 def list_threads() -> list[str]:
