@@ -29,10 +29,14 @@ def list_threads() -> list[str]:
     if not Path(DB_PATH).exists():
         return []
     with closing(sqlite3.connect(DB_PATH)) as conn:
-        rows = conn.execute(
-            "SELECT thread_id, MAX(checkpoint_id) AS latest FROM checkpoints "
-            "WHERE checkpoint_ns = '' GROUP BY thread_id ORDER BY latest DESC"
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                "SELECT thread_id, MAX(checkpoint_id) AS latest FROM checkpoints "
+                "WHERE checkpoint_ns = '' GROUP BY thread_id ORDER BY latest DESC"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # The first run hasn't created the checkpoint table yet.
+            return []
     return [row[0] for row in rows]
 
 
