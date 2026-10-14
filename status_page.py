@@ -64,6 +64,7 @@ h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing
 table { width: 100%; border-collapse: collapse; }
 td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; font-size: 13px; }
+td:not(:last-child), th:not(:last-child) { width: 1%; white-space: nowrap; padding-right: 24px; }
 pre { white-space: pre-wrap; margin: 0; font-size: 13px; }
 .muted { color: var(--muted); }
 """
