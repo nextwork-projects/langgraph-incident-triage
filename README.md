@@ -4,13 +4,15 @@ Starting code for the NextWork Project **Build a Multi-Agent Incident Triage Sys
 
 `app.py` is the finished single-analyst incident workflow from the NextWork Project [Build a Resumable LangGraph Workflow](https://nextwork.ai/projects/f94db9b2-1157-404b-a559-83e8752f2f86). It is included unchanged. One Gemini call analyzes an incident, a deterministic policy decides whether a human must approve, `interrupt()` pauses the run, and `SqliteSaver` lets a new process resume it. You don't need to have done that Project first: this repo gives you the same starting point either way.
 
-In this Project you turn that single analyst into a team: a router, specialist agents that investigate in parallel, recovery when one of them crashes, and an approval gate for each team that owns a fix.
+In this Project you turn that single analyst into a team: a router, specialist agents that investigate in parallel, recovery when one of them crashes, and an approval gate for each team that owns a fix. The setup code for the specialists and the status page is already here, so you spend your time on the agents and the graph.
 
 ## What's in the repo
 
 | Path | What it is |
 |---|---|
 | `app.py` | The starting workflow: `start` and `resume` commands, one analyst, one approval gate |
+| `specialists.py` | Setup code for the specialist agents: the Gemini model connection, a fixture loader, and one tool each for logs, deploys, and metrics. You add the agents themselves in the Project |
+| `status_page.py` | The web page for the Secret Mission: HTML, styling, and a small server for Cloud Shell Web Preview. You write the part that reads an incident's saved state |
 | `requirements.txt` | Pinned packages. `langchain` is new in this Project (for `create_agent`) |
 | `data/alerts.json` | Two alerts to triage: `INC-2041` (checkout errors) and `INC-2042` (search latency) |
 | `data/logs.jsonl` | Application logs from the services involved, one JSON object per line |
