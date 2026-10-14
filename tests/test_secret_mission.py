@@ -49,3 +49,10 @@ def test_status_page_serves_published_runbook(tmp_path, monkeypatch):
     assert "approve" in page and "reject" in page
     assert "Not published yet." not in page
     assert "Roll back d-1042." in page
+
+
+def test_status_page_before_first_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert status_page.list_threads() == []
+    (tmp_path / "triage_checkpoints.db").touch()  # created, but no tables yet
+    assert status_page.list_threads() == []
